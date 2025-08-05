@@ -1,0 +1,43 @@
+# Copy this file to .env and fill in your values
+
+# Database Configuration
+MONGODB_URL=mongodb://localhost:27017
+DATABASE_NAME=social_media_automation
+
+# JWT Configuration
+SECRET_KEY=your-secret-key-here-change-this-in-production
+ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# LinkedIn OAuth Configuration
+LINKEDIN_CLIENT_ID=78ezba5uscu27i
+LINKEDIN_CLIENT_SECRET=WPL_AP1.TRmef0zZ05LpG9DS.Np0p8w==
+LINKEDIN_REDIRECT_URI=http://localhost:3000/linkedin-callback
+LINKEDIN_SCOPE=openid profile w_member_social email
+
+# LinkedIn Tokens (will be populated after OAuth flow)
+LINKEDIN_ACCESS_TOKEN=
+LINKEDIN_REFRESH_TOKEN=
+
+# Email Configuration
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+EMAIL_USERNAME=
+EMAIL_PASSWORD=
+
+# AI Configuration
+GEMINI_API_KEY=
+
+# Image Generation APIs
+OPENAI_API_KEY=
+UNSPLASH_ACCESS_KEY=
+
+# Other Social Media API Keys
+FACEBOOK_APP_ID=
+FACEBOOK_APP_SECRET=
+TWITTER_API_KEY=
+TWITTER_API_SECRET=
+TWITTER_ACCESS_TOKEN=
+TWITTER_ACCESS_TOKEN_SECRET=
+INSTAGRAM_USERNAME=
+INSTAGRAM_PASSWORD= 
