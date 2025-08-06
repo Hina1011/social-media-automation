@@ -3,6 +3,14 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import List
 from bson import ObjectId
 import logging
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+
+class ScheduleTimeRequest(BaseModel):
+    schedule_time: str
+
+class BatchApproveRequest(BaseModel):
+    batch_id: str
 
 from database import get_database, USERS_COLLECTION, POSTS_COLLECTION, PLATFORM_CONNECTIONS_COLLECTION
 from models import (
@@ -18,6 +26,7 @@ router = APIRouter()
 security = HTTPBearer()
 
 
+# 1. All static routes (no path params)
 @router.post("/generate", response_model=List[dict])
 async def generate_posts(
     request: PostGenerationRequest,
@@ -191,6 +200,584 @@ async def get_user_posts(
         )
 
 
+@router.post("/approve", response_model=dict)
+async def approve_posts(
+    approval_request: PostApprovalRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Approve posts for scheduling."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        if approval_request.approve_all:
+            # Approve all user's draft posts
+            result = await db[POSTS_COLLECTION].update_many(
+                {
+                    "user_id": ObjectId(user["_id"]),
+                    "status": "draft"
+                },
+                {
+                    "$set": {
+                        "status": "approved",
+                        "updated_at": "2024-01-01T00:00:00Z"
+                    }
+                }
+            )
+            
+            return {
+                "message": f"Approved {result.modified_count} posts",
+                "approved_count": result.modified_count
+            }
+        else:
+            # Approve specific posts
+            post_ids = [ObjectId(pid) for pid in approval_request.post_ids]
+            
+            result = await db[POSTS_COLLECTION].update_many(
+                {
+                    "_id": {"$in": post_ids},
+                    "user_id": ObjectId(user["_id"])
+                },
+                {
+                    "$set": {
+                        "status": "approved",
+                        "updated_at": "2024-01-01T00:00:00Z"
+                    }
+                }
+            )
+            
+            return {
+                "message": f"Approved {result.modified_count} posts",
+                "approved_count": result.modified_count
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in approve_posts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@router.post("/batch-approve", response_model=dict)
+async def batch_approve_posts(
+    req: BatchApproveRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Approve all posts in a batch and start automatic posting."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user data
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Update all posts in the batch to approved status
+        result = await db[POSTS_COLLECTION].update_many(
+            {
+                "user_id": ObjectId(user["_id"]),
+                "batch_id": req.batch_id,
+                "status": "pending_approval"
+            },
+            {
+                "$set": {
+                    "status": "approved",
+                    "approved_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat()
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No posts found for approval in this batch"
+            )
+        
+        # Start automatic posting for approved posts
+        approved_posts = await db[POSTS_COLLECTION].find({
+            "user_id": ObjectId(user["_id"]),
+            "batch_id": req.batch_id,
+            "status": "approved"
+        }).to_list(length=None)
+        
+        # Schedule posts for automatic posting
+        if approved_posts:
+            from utils.scheduler import schedule_user_posts
+            
+            # Get user's schedule time or use default
+            schedule_time = user.get("schedule_time", "09:00")
+            
+            # Schedule the posts
+            await schedule_user_posts(str(user["_id"]), schedule_time)
+            
+            logger.info(f"Scheduled {len(approved_posts)} posts for user {user['email']} at {schedule_time}")
+        
+        return {
+            "message": f"Successfully approved {result.modified_count} posts",
+            "approved_count": result.modified_count,
+            "batch_id": req.batch_id,
+            "scheduled_time": user.get("schedule_time", "09:00")
+        }
+        
+    except Exception as e:
+        logger.error(f"Error approving batch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error approving posts"
+        )
+
+
+@router.post("/regenerate-next-batch", response_model=dict)
+async def regenerate_next_batch(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Generate next 7 days of posts after current batch is approved."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user data
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Find the latest approved batch to determine start date
+        latest_post = await db[POSTS_COLLECTION].find_one(
+            {
+                "user_id": ObjectId(user["_id"]),
+                "status": {"$in": ["approved", "scheduled", "posted"]}
+            },
+            sort=[("scheduled_date", -1)]
+        )
+        
+        if not latest_post:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No previous posts found. Please approve your first batch first."
+            )
+        
+        # Calculate start date for next batch (7 days after the last post)
+        last_date = datetime.fromisoformat(latest_post["scheduled_date"])
+        start_date = last_date + timedelta(days=7)
+        
+        # Generate next 7 days of posts
+        generated_posts = await ai_generator.generate_7_day_batch(
+            interests=user["interests"],
+            custom_prompt=user.get("custom_prompt", ""),
+            platforms=['instagram', 'linkedin', 'facebook', 'twitter'],
+            start_date=start_date
+        )
+        
+        # Create post documents
+        posts_to_insert = []
+        batch_id = f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        for post_data in generated_posts:
+            post_doc = {
+                "user_id": ObjectId(user["_id"]),
+                "caption": post_data["caption"],
+                "hashtags": post_data["hashtags"],
+                "scheduled_date": post_data["scheduled_date"],
+                "platforms": post_data.get("platforms", ["instagram"]),
+                "status": "pending_approval",
+                "custom_prompt": user.get("custom_prompt", ""),
+                "image_prompt": post_data["image_prompt"],
+                "image_url": post_data.get("image_url"),
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "batch_id": batch_id,
+                "is_auto_generated": True
+            }
+            posts_to_insert.append(post_doc)
+        
+        # Insert posts
+        if posts_to_insert:
+            result = await db[POSTS_COLLECTION].insert_many(posts_to_insert)
+            post_ids = [str(post_id) for post_id in result.inserted_ids]
+            
+            # Send notification to user about new batch
+            try:
+                from utils.notifications import notify_batch_ready
+                await notify_batch_ready(str(user["_id"]), batch_id, len(post_ids))
+            except Exception as e:
+                logger.error(f"Error sending batch ready notification: {e}")
+            
+            return {
+                "message": "Next batch generated successfully",
+                "generated_count": len(post_ids),
+                "batch_id": batch_id,
+                "start_date": start_date.isoformat(),
+                "posts_ready_for_approval": True
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate posts"
+            )
+        
+    except Exception as e:
+        logger.error(f"Error regenerating next batch: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error generating next batch"
+        )
+
+
+@router.get("/pending-approval", response_model=List[dict])
+async def get_pending_approval_posts(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Get all posts pending approval for the current user."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user data
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            logger.error(f"User not found for email: {email}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Get posts pending approval
+        try:
+            posts = await db[POSTS_COLLECTION].find({
+                "user_id": user["_id"],
+                "status": "pending_approval"
+            }).sort("scheduled_date", 1).to_list(length=None)
+        except Exception as e:
+            logger.error(f"Error querying posts for pending approval: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Query error: {e}"
+            )
+        
+        # Convert ObjectIds to strings
+        post_list = []
+        for post in posts:
+            post_data = {
+                "_id": str(post["_id"]),
+                "user_id": str(post["user_id"]),
+                "caption": post.get("caption", ""),
+                "hashtags": post.get("hashtags", []),
+                "image_url": post.get("image_url"),
+                "scheduled_date": post.get("scheduled_date"),
+                "platforms": post.get("platforms", []),
+                "status": post.get("status", "pending_approval"),
+                "custom_prompt": post.get("custom_prompt"),
+                "batch_id": post.get("batch_id"),
+                "is_auto_generated": post.get("is_auto_generated", False)
+            }
+            post_list.append(post_data)
+        
+        return post_list
+        
+    except Exception as e:
+        logger.error(f"Error getting pending approval posts: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving posts: {e}"
+        )
+
+
+@router.get("/batches", response_model=List[dict])
+async def get_user_batches(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Get all batches for the current user."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user data
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            logger.error(f"User not found for email: {email}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Get all batches with their status
+        try:
+            pipeline = [
+                {"$match": {"user_id": user["_id"]}},
+                {"$group": {
+                    "_id": "$batch_id",
+                    "batch_id": {"$first": "$batch_id"},
+                    "total_posts": {"$sum": 1},
+                    "pending_count": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "pending_approval"]}, 1, 0]}
+                    },
+                    "approved_count": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "approved"]}, 1, 0]}
+                    },
+                    "scheduled_count": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "scheduled"]}, 1, 0]}
+                    },
+                    "posted_count": {
+                        "$sum": {"$cond": [{"$eq": ["$status", "posted"]}, 1, 0]}
+                    },
+                    "created_at": {"$first": "$created_at"},
+                    "is_auto_generated": {"$first": "$is_auto_generated"}
+                }},
+                {"$sort": {"created_at": -1}}
+            ]
+            batches = await db[POSTS_COLLECTION].aggregate(pipeline).to_list(length=None)
+        except Exception as e:
+            logger.error(f"Error in aggregation pipeline for batches: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Aggregation error: {e}"
+            )
+        
+        return batches
+        
+    except Exception as e:
+        logger.error(f"Error getting user batches: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving batches: {e}"
+        )
+
+
+@router.put("/schedule-time", response_model=dict)
+async def update_schedule_time(
+    req: ScheduleTimeRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Update the default posting time for the user."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Validate time format
+        try:
+            datetime.strptime(req.schedule_time, "%H:%M")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid time format. Use HH:MM format (e.g., 09:30)"
+            )
+        
+        # Update user's schedule time
+        result = await db[USERS_COLLECTION].update_one(
+            {"email": email},
+            {
+                "$set": {
+                    "schedule_time": req.schedule_time,
+                    "updated_at": datetime.now().isoformat()
+                }
+            }
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        return {
+            "message": "Schedule time updated successfully",
+            "schedule_time": req.schedule_time
+        }
+        
+    except Exception as e:
+        logger.error(f"Error updating schedule time: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating schedule time"
+        ) 
+
+
+@router.post("/batch-post-to-linkedin", response_model=dict)
+async def batch_post_to_linkedin(
+    post_ids: List[str],
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """Post multiple posts to LinkedIn."""
+    try:
+        token = credentials.credentials
+        email = verify_token(token)
+        if not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        db = get_database()
+        
+        # Get user
+        user = await db[USERS_COLLECTION].find_one({"email": email})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        # Check if LinkedIn is connected
+        linkedin_connection = await db[PLATFORM_CONNECTIONS_COLLECTION].find_one({
+            "user_id": ObjectId(user["_id"]),
+            "platform": "linkedin",
+            "is_connected": True
+        })
+        
+        if not linkedin_connection:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="LinkedIn account not connected. Please connect your LinkedIn account first."
+            )
+        
+        # Get valid access token using token manager
+        access_token = await linkedin_token_manager.get_valid_token(ObjectId(user["_id"]))
+        if not access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="LinkedIn access token not available or invalid. Please reconnect your LinkedIn account."
+            )
+        
+        # Get posts
+        try:
+            post_object_ids = [ObjectId(pid) for pid in post_ids]
+            posts = await db[POSTS_COLLECTION].find({
+                "_id": {"$in": post_object_ids},
+                "user_id": ObjectId(user["_id"])
+            }).to_list(length=None)
+        except:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid post IDs"
+            )
+        
+        if len(posts) != len(post_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Some posts not found"
+            )
+        
+        # Post each post to LinkedIn
+        results = []
+        for post in posts:
+            caption = post.get("caption", "")
+            hashtags = post.get("hashtags", [])
+            image_url = post.get("image_url")
+            
+            content = caption
+            if hashtags:
+                content += "\n\n" + " ".join(hashtags)
+            
+            result = await linkedin_service.create_post(access_token, content, image_url)
+            
+            if result and result.get("success"):
+                # Update post status
+                await db[POSTS_COLLECTION].update_one(
+                    {"_id": post["_id"]},
+                    {
+                        "$set": {
+                            "status": "posted",
+                            "posted_to_linkedin": True,
+                            "linkedin_post_id": result.get("post_id"),
+                            "updated_at": "2024-01-01T00:00:00Z"
+                        }
+                    }
+                )
+                
+                results.append({
+                    "post_id": str(post["_id"]),
+                    "success": True,
+                    "linkedin_post_id": result.get("post_id")
+                })
+            else:
+                results.append({
+                    "post_id": str(post["_id"]),
+                    "success": False,
+                    "error": result.get("message", "Failed to post") if result else "Failed to post"
+                })
+        
+        success_count = sum(1 for r in results if r["success"])
+        
+        return {
+            "success": True,
+            "message": f"Posted {success_count} out of {len(posts)} posts to LinkedIn",
+            "results": results,
+            "total_posts": len(posts),
+            "successful_posts": success_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in batch posting to LinkedIn: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        ) 
+
+
+# 2. All dynamic routes (with path params) at the end
 @router.get("/{post_id}", response_model=dict)
 async def get_post(
     post_id: str,
@@ -338,82 +925,6 @@ async def update_post(
         raise
     except Exception as e:
         logger.error(f"Error in update_post: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
-
-
-@router.post("/approve", response_model=dict)
-async def approve_posts(
-    approval_request: PostApprovalRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """Approve posts for scheduling."""
-    try:
-        token = credentials.credentials
-        email = verify_token(token)
-        if not email:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-        
-        db = get_database()
-        
-        # Get user
-        user = await db[USERS_COLLECTION].find_one({"email": email})
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        if approval_request.approve_all:
-            # Approve all user's draft posts
-            result = await db[POSTS_COLLECTION].update_many(
-                {
-                    "user_id": ObjectId(user["_id"]),
-                    "status": "draft"
-                },
-                {
-                    "$set": {
-                        "status": "approved",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }
-            )
-            
-            return {
-                "message": f"Approved {result.modified_count} posts",
-                "approved_count": result.modified_count
-            }
-        else:
-            # Approve specific posts
-            post_ids = [ObjectId(pid) for pid in approval_request.post_ids]
-            
-            result = await db[POSTS_COLLECTION].update_many(
-                {
-                    "_id": {"$in": post_ids},
-                    "user_id": ObjectId(user["_id"])
-                },
-                {
-                    "$set": {
-                        "status": "approved",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }
-            )
-            
-            return {
-                "message": f"Approved {result.modified_count} posts",
-                "approved_count": result.modified_count
-            }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in approve_posts: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
@@ -756,130 +1267,6 @@ async def post_to_linkedin(
         raise
     except Exception as e:
         logger.error(f"Error posting to LinkedIn: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
-
-
-@router.post("/batch-post-to-linkedin", response_model=dict)
-async def batch_post_to_linkedin(
-    post_ids: List[str],
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    """Post multiple posts to LinkedIn."""
-    try:
-        token = credentials.credentials
-        email = verify_token(token)
-        if not email:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-        
-        db = get_database()
-        
-        # Get user
-        user = await db[USERS_COLLECTION].find_one({"email": email})
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        # Check if LinkedIn is connected
-        linkedin_connection = await db[PLATFORM_CONNECTIONS_COLLECTION].find_one({
-            "user_id": ObjectId(user["_id"]),
-            "platform": "linkedin",
-            "is_connected": True
-        })
-        
-        if not linkedin_connection:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="LinkedIn account not connected. Please connect your LinkedIn account first."
-            )
-        
-        # Get valid access token using token manager
-        access_token = await linkedin_token_manager.get_valid_token(ObjectId(user["_id"]))
-        if not access_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="LinkedIn access token not available or invalid. Please reconnect your LinkedIn account."
-            )
-        
-        # Get posts
-        try:
-            post_object_ids = [ObjectId(pid) for pid in post_ids]
-            posts = await db[POSTS_COLLECTION].find({
-                "_id": {"$in": post_object_ids},
-                "user_id": ObjectId(user["_id"])
-            }).to_list(length=None)
-        except:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid post IDs"
-            )
-        
-        if len(posts) != len(post_ids):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Some posts not found"
-            )
-        
-        # Post each post to LinkedIn
-        results = []
-        for post in posts:
-            caption = post.get("caption", "")
-            hashtags = post.get("hashtags", [])
-            image_url = post.get("image_url")
-            
-            content = caption
-            if hashtags:
-                content += "\n\n" + " ".join(hashtags)
-            
-            result = await linkedin_service.create_post(access_token, content, image_url)
-            
-            if result and result.get("success"):
-                # Update post status
-                await db[POSTS_COLLECTION].update_one(
-                    {"_id": post["_id"]},
-                    {
-                        "$set": {
-                            "status": "posted",
-                            "posted_to_linkedin": True,
-                            "linkedin_post_id": result.get("post_id"),
-                            "updated_at": "2024-01-01T00:00:00Z"
-                        }
-                    }
-                )
-                
-                results.append({
-                    "post_id": str(post["_id"]),
-                    "success": True,
-                    "linkedin_post_id": result.get("post_id")
-                })
-            else:
-                results.append({
-                    "post_id": str(post["_id"]),
-                    "success": False,
-                    "error": result.get("message", "Failed to post") if result else "Failed to post"
-                })
-        
-        success_count = sum(1 for r in results if r["success"])
-        
-        return {
-            "success": True,
-            "message": f"Posted {success_count} out of {len(posts)} posts to LinkedIn",
-            "results": results,
-            "total_posts": len(posts),
-            "successful_posts": success_count
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in batch posting to LinkedIn: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"

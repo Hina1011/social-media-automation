@@ -131,6 +131,10 @@ export const postsAPI = {
     if (!ensureToken()) return Promise.reject(new Error('No token'))
     return api.get('/posts/', { params })
   },
+  getUserPosts: () => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.get('/posts/')
+  },
   getPost: (id) => {
     if (!ensureToken()) return Promise.reject(new Error('No token'))
     return api.get(`/posts/${id}`)
@@ -161,6 +165,27 @@ export const postsAPI = {
   regeneratePost: (id) => {
     if (!ensureToken()) return Promise.reject(new Error('No token'))
     return api.post(`/posts/${id}/regenerate`)
+  },
+  // New automation endpoints
+  batchApprove: (batchId) => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.post('/posts/batch-approve', { batch_id: batchId })
+  },
+  regenerateNextBatch: () => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.post('/posts/regenerate-next-batch')
+  },
+  getPendingApprovalPosts: () => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.get('/posts/pending-approval')
+  },
+  getUserBatches: () => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.get('/posts/batches')
+  },
+  updateScheduleTime: (scheduleTime) => {
+    if (!ensureToken()) return Promise.reject(new Error('No token'))
+    return api.put('/posts/schedule-time', { schedule_time: scheduleTime })
   },
   // LinkedIn posting endpoints
   postToLinkedIn: (postId) => {

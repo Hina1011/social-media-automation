@@ -14,7 +14,10 @@ import {
   FileText,
   Settings,
   ArrowRight,
-  Grid3X3
+  Grid3X3,
+  CheckCircle,
+  AlertCircle,
+  Clock
 } from 'lucide-react'
 
 export function DashboardPage() {
@@ -31,6 +34,7 @@ export function DashboardPage() {
     facebook: false,
     twitter: false
   })
+  const [pendingPosts, setPendingPosts] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [viewMode, setViewMode] = useState('calendar') // 'calendar' or 'overview'
 
@@ -40,9 +44,10 @@ export function DashboardPage() {
 
   const loadDashboardData = async () => {
     try {
-      const [analyticsResponse, platformResponse] = await Promise.all([
+      const [analyticsResponse, platformResponse, pendingResponse] = await Promise.all([
         analyticsAPI.getSummary(),
-        platformsAPI.getStatus()
+        platformsAPI.getStatus(),
+        postsAPI.getPendingApprovalPosts()
       ])
 
       setStats({
@@ -53,6 +58,7 @@ export function DashboardPage() {
       })
 
       setPlatformStatus(platformResponse.data)
+      setPendingPosts(pendingResponse.data || [])
     } catch (error) {
       console.error('Error loading dashboard data:', error)
     } finally {
@@ -61,6 +67,14 @@ export function DashboardPage() {
   }
 
   const quickActions = [
+    {
+      title: 'Review Posts',
+      description: 'Approve or edit your generated content',
+      icon: CheckCircle,
+      href: '/posts',
+      color: 'bg-green-500',
+      show: pendingPosts.length > 0
+    },
     {
       title: 'Generate Posts',
       description: 'Create AI-powered content for your social media',
@@ -73,21 +87,21 @@ export function DashboardPage() {
       description: 'Check your performance and growth metrics',
       icon: BarChart3,
       href: '/analytics',
-      color: 'bg-green-500'
+      color: 'bg-purple-500'
     },
     {
       title: 'Connect Platforms',
       description: 'Link your social media accounts',
       icon: Share2,
       href: '/platforms',
-      color: 'bg-purple-500'
+      color: 'bg-orange-500'
     },
     {
       title: 'Manage Profile',
       description: 'Update your account settings and preferences',
       icon: Settings,
       href: '/profile',
-      color: 'bg-orange-500'
+      color: 'bg-gray-500'
     }
   ]
 
@@ -109,9 +123,40 @@ export function DashboardPage() {
           Welcome back, {user?.full_name?.split(' ')[0]}! 👋
         </h1>
         <p className="text-primary-100">
-          Manage your social media content with our AI-powered calendar
+          Your social media content is now automated! Review and approve your AI-generated posts.
         </p>
       </div>
+
+      {/* Pending Approval Alert */}
+      {pendingPosts.length > 0 && (
+        <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-lg p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="w-12 h-12 bg-yellow-100 rounded-full flex items-center justify-center">
+                <AlertCircle className="w-6 h-6 text-yellow-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-yellow-800">
+                  Posts Ready for Approval
+                </h3>
+                <p className="text-sm text-yellow-700">
+                  {pendingPosts.length} posts are waiting for your approval. Once approved, they'll be automatically posted to your connected platforms.
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-3">
+              <Link
+                to="/posts"
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <CheckCircle className="w-4 h-4" />
+                <span>Review Posts</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* View Mode Toggle */}
       <div className="flex items-center justify-between">
@@ -149,6 +194,10 @@ export function DashboardPage() {
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
             <span className="text-gray-600">Scheduled</span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+            <span className="text-gray-600">Pending</span>
           </div>
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
@@ -224,6 +273,34 @@ export function DashboardPage() {
             </div>
           </div>
 
+          {/* Automation Status */}
+          <div className="card">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900">Automation Status</h2>
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span className="text-sm text-green-600 font-medium">Active</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="text-center p-4 bg-green-50 rounded-lg">
+                <CheckCircle className="w-8 h-8 text-green-600 mx-auto mb-2" />
+                <h3 className="font-medium text-green-900">Auto-Generation</h3>
+                <p className="text-sm text-green-700">7-day batches created automatically</p>
+              </div>
+              <div className="text-center p-4 bg-blue-50 rounded-lg">
+                <Clock className="w-8 h-8 text-blue-600 mx-auto mb-2" />
+                <h3 className="font-medium text-blue-900">Smart Scheduling</h3>
+                <p className="text-sm text-blue-700">Posts scheduled at optimal times</p>
+              </div>
+              <div className="text-center p-4 bg-purple-50 rounded-lg">
+                <Share2 className="w-8 h-8 text-purple-600 mx-auto mb-2" />
+                <h3 className="font-medium text-purple-900">Multi-Platform</h3>
+                <p className="text-sm text-purple-700">Posts to all connected platforms</p>
+              </div>
+            </div>
+          </div>
+
           {/* Platform Status */}
           <div className="card">
             <div className="flex items-center justify-between mb-4">
@@ -257,8 +334,8 @@ export function DashboardPage() {
             <div className="mt-4 p-3 bg-gray-50 rounded-lg">
               <p className="text-sm text-gray-600">
                 {connectedPlatforms === 0
-                  ? 'No platforms connected. Connect your social media accounts to start posting.'
-                  : `${connectedPlatforms} platform${connectedPlatforms > 1 ? 's' : ''} connected.`
+                  ? 'No platforms connected. Connect your social media accounts to start automatic posting.'
+                  : `${connectedPlatforms} platform${connectedPlatforms > 1 ? 's' : ''} connected. Posts will be automatically shared to all connected platforms.`
                 }
               </p>
             </div>
@@ -267,8 +344,8 @@ export function DashboardPage() {
           {/* Quick Actions */}
           <div className="card">
             <h2 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {quickActions.map((action, index) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {quickActions.filter(action => action.show !== false).map((action, index) => (
                 <Link
                   key={index}
                   to={action.href}
@@ -303,24 +380,26 @@ export function DashboardPage() {
               </Link>
             </div>
             <div className="space-y-3">
-              <div className="flex items-center p-3 bg-gray-50 rounded-lg">
-                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center mr-3">
-                  <Calendar className="w-4 h-4 text-blue-600" />
+              {pendingPosts.length > 0 && (
+                <div className="flex items-center p-3 bg-yellow-50 rounded-lg">
+                  <div className="w-8 h-8 bg-yellow-100 rounded-full flex items-center justify-center mr-3">
+                    <AlertCircle className="w-4 h-4 text-yellow-600" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-900">Posts pending approval</p>
+                    <p className="text-xs text-gray-500">{pendingPosts.length} posts ready for review</p>
+                  </div>
+                  <span className="text-xs text-gray-400">Just now</span>
                 </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900">New posts generated</p>
-                  <p className="text-xs text-gray-500">7 posts scheduled for next week</p>
-                </div>
-                <span className="text-xs text-gray-400">2 hours ago</span>
-              </div>
+              )}
 
               <div className="flex items-center p-3 bg-gray-50 rounded-lg">
                 <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center mr-3">
                   <TrendingUp className="w-4 h-4 text-green-600" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900">Engagement increased</p>
-                  <p className="text-xs text-gray-500">Your posts got 15% more likes this week</p>
+                  <p className="text-sm font-medium text-gray-900">Automation active</p>
+                  <p className="text-xs text-gray-500">Your content is being automatically generated and scheduled</p>
                 </div>
                 <span className="text-xs text-gray-400">1 day ago</span>
               </div>
@@ -330,8 +409,8 @@ export function DashboardPage() {
                   <Users className="w-4 h-4 text-purple-600" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900">New followers</p>
-                  <p className="text-xs text-gray-500">You gained 25 new followers</p>
+                  <p className="text-sm font-medium text-gray-900">Account created</p>
+                  <p className="text-xs text-gray-500">Welcome to automated social media management</p>
                 </div>
                 <span className="text-xs text-gray-400">3 days ago</span>
               </div>

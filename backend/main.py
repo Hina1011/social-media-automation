@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
 import os
+import asyncio
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -13,6 +14,7 @@ load_dotenv()
 from config import settings
 from database import connect_to_mongo, close_mongo_connection, db
 from utils import verify_token
+from utils.scheduler import start_scheduler, stop_scheduler
 
 # Import routers
 from routers import auth, users, posts, platforms, analytics
@@ -40,12 +42,27 @@ async def lifespan(app: FastAPI):
     os.makedirs("static/images/generated", exist_ok=True)
     os.makedirs("static/images/placeholder", exist_ok=True)
     
+    # Start the scheduler service
+    try:
+        # Start scheduler in background
+        asyncio.create_task(start_scheduler())
+        logger.info("Post scheduler started successfully!")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {e}")
+        logger.warning("Application will start without scheduler. Automatic posting may not work.")
+    
     logger.info("Application startup complete!")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Social Media Automation Platform...")
+    try:
+        await stop_scheduler()
+        logger.info("Scheduler stopped successfully!")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}")
+    
     try:
         await close_mongo_connection()
         logger.info("MongoDB connection closed successfully!")

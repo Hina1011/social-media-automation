@@ -10,7 +10,7 @@ from utils import (
     get_password_hash, verify_password, create_access_token,
     generate_otp, send_otp_email, send_welcome_email
 )
-from config.settings import *
+from config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,11 +41,11 @@ async def debug_auth():
         
         # Check settings
         settings_info = {
-            "secret_key": "***" if JWT_SECRET_KEY else "NOT_SET",
-            "algorithm": JWT_ALGORITHM,
-            "access_token_expire_minutes": ACCESS_TOKEN_EXPIRE_MINUTES,
-            "mongodb_url": MONGODB_URL[:20] + "..." if len(MONGODB_URL) > 20 else MONGODB_URL,
-            "database_name": DATABASE_NAME
+            "secret_key": "***" if settings.JWT_SECRET_KEY else "NOT_SET",
+            "algorithm": settings.JWT_ALGORITHM,
+            "access_token_expire_minutes": settings.ACCESS_TOKEN_EXPIRE_MINUTES,
+            "mongodb_url": settings.MONGODB_URL[:20] + "..." if len(settings.MONGODB_URL) > 20 else settings.MONGODB_URL,
+            "database_name": settings.DATABASE_NAME
         }
         
         return {
@@ -92,24 +92,67 @@ async def signup(user_data: UserCreate):
         # Insert user
         result = await db[USERS_COLLECTION].insert_one(user_doc)
         
-        # Skip OTP generation for development
-        # otp = generate_otp()
-        # otp_doc = {
-        #     "email": user_data.email,
-        #     "otp": otp,
-        #     "created_at": "2024-01-01T00:00:00Z",  # Will be set by MongoDB
-        #     "expires_at": "2024-01-01T00:00:00Z"   # Will be set by MongoDB
-        # }
-        # 
-        # await db[OTP_COLLECTION].insert_one(otp_doc)
-        # 
-        # Send OTP email
-        # email_sent = await send_otp_email(user_data.email, otp)
+        # Auto-generate 7 posts for the new user (only if AI is configured)
+        post_ids = []
+        try:
+            from utils import ai_generator
+            from database import POSTS_COLLECTION
+            from datetime import datetime, timedelta
+            
+            # Only generate posts for individual users
+            if user_data.role == 'individual':
+                logger.info(f"Auto-generating 7 days of posts for new user: {user_data.email}")
+                
+                # Generate 7 days of posts starting from tomorrow
+                start_date = datetime.now() + timedelta(days=1)
+                generated_posts = await ai_generator.generate_7_day_batch(
+                    interests=user_data.interests,
+                    custom_prompt=user_data.custom_prompt,
+                    platforms=['instagram', 'linkedin', 'facebook', 'twitter'],  # Default platforms
+                    start_date=start_date
+                )
+                
+                # Create post documents
+                posts_to_insert = []
+                for post_data in generated_posts:
+                    post_doc = {
+                        "user_id": result.inserted_id,
+                        "caption": post_data["caption"],
+                        "hashtags": post_data["hashtags"],
+                        "scheduled_date": post_data["scheduled_date"],
+                        "platforms": post_data.get("platforms", ["instagram"]),
+                        "status": "pending_approval",  # New status for approval workflow
+                        "custom_prompt": user_data.custom_prompt,
+                        "image_prompt": post_data["image_prompt"],
+                        "image_url": post_data.get("image_url"),
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                        "batch_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                        "is_auto_generated": True
+                    }
+                    posts_to_insert.append(post_doc)
+                
+                # Insert posts
+                if posts_to_insert:
+                    posts_result = await db[POSTS_COLLECTION].insert_many(posts_to_insert)
+                    post_ids = [str(post_id) for post_id in posts_result.inserted_ids]
+                    logger.info(f"Generated {len(post_ids)} posts for user {user_data.email}")
+                
+        except Exception as e:
+            logger.error(f"Error auto-generating posts for user {user_data.email}: {e}")
+            # Don't fail signup if post generation fails
+        
+        # Send welcome email
+        try:
+            await send_welcome_email(user_data.email, user_data.full_name)
+        except Exception as e:
+            logger.error(f"Error sending welcome email: {e}")
         
         return {
-            "message": "User registered successfully! You can now login.",
+            "message": "User created successfully",
             "user_id": str(result.inserted_id),
-            "email_sent": False
+            "auto_generated_posts": len(post_ids),
+            "posts_ready_for_approval": len(post_ids) > 0
         }
         
     except HTTPException:
@@ -169,7 +212,7 @@ async def login(user_credentials: UserLogin):
         try:
             access_token = create_access_token(
                 data={"sub": user["email"]},
-                expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
             )
         except Exception as token_error:
             logger.error(f"Token creation error in login: {token_error}")

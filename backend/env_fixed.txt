@@ -1,5 +1,5 @@
 # Database Configuration
-MONGODB_URL=mongodb+srv://hinabisen11:UvAfLrUwruo77w6g@cluster0.l5tteqx.mongodb.net/?retryWrites=true&w=majority
+MONGODB_URL=mongodb+srv://hinabisen11:UvAfLrUwruo77w6g@cluster0.l5tteqx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0&ssl=true&ssl_cert_reqs=CERT_NONE
 DATABASE_NAME=social_media_automation
 
 # JWT Configuration
@@ -18,17 +18,17 @@ LINKEDIN_ACCESS_TOKEN=
 LINKEDIN_REFRESH_TOKEN=
 
 # Email Configuration
-# Email Configuration (for notifications)
 SMTP_SERVER=smtp.gmail.com
 SMTP_PORT=587
-EMAIL_USERNAME=mrbairagi2003@gmail.com
-EMAIL_PASSWORD=mwbk kvak nxch vspv 
+SMTP_USERNAME=
+SMTP_PASSWORD=
+
 # AI Configuration
-GEMINI_API_KEY=AIzaSyDNdyRq30yBJZIwGc4USOLd6JA6wCtJEH8
+GEMINI_API_KEY=
 
 # Image Generation APIs
-OPENAI_API_KEY=sk-kKPPJhupHxfmbKLBh9rogXJtkvCNhVSVwiL1rwXMfFVIEbw6
-UNSPLASH_ACCESS_KEY=uCwTYfCNO_t_Xg-glUVU1XRuYUNdBExKpLJlTXYPVT0
+OPENAI_API_KEY=
+UNSPLASH_ACCESS_KEY=
 
 # Other Social Media API Keys
 FACEBOOK_CLIENT_ID=
@@ -40,8 +40,3 @@ INSTAGRAM_CLIENT_SECRET=
 
 # Development settings
 DEBUG=True 
-# Email Configuration (for notifications)
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=587
-EMAIL_USERNAME=your-email@gmail.com
-EMAIL_PASSWORD=your-app-password
